@@ -596,6 +596,10 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.PUT("/quota-exceeded/switch-preview-model", s.mgmt.PutSwitchPreviewModel)
 		mgmt.PATCH("/quota-exceeded/switch-preview-model", s.mgmt.PutSwitchPreviewModel)
 
+		mgmt.GET("/quota-exceeded/codex-five-hour-reserve-percent", s.mgmt.GetCodexFiveHourReservePercent)
+		mgmt.PUT("/quota-exceeded/codex-five-hour-reserve-percent", s.mgmt.PutCodexFiveHourReservePercent)
+		mgmt.PATCH("/quota-exceeded/codex-five-hour-reserve-percent", s.mgmt.PutCodexFiveHourReservePercent)
+
 		mgmt.GET("/api-keys", s.mgmt.GetAPIKeys)
 		mgmt.PUT("/api-keys", s.mgmt.PutAPIKeys)
 		mgmt.PATCH("/api-keys", s.mgmt.PatchAPIKeys)
@@ -697,6 +701,8 @@ func (s *Server) registerManagementRoutes() {
 		mgmt.DELETE("/auth-files", s.mgmt.DeleteAuthFile)
 		mgmt.PATCH("/auth-files/status", s.mgmt.PatchAuthFileStatus)
 		mgmt.PATCH("/auth-files/fields", s.mgmt.PatchAuthFileFields)
+		mgmt.PATCH("/auth-files/codex-five-hour-reserve-percent", s.mgmt.PatchCodexFiveHourReservePercent)
+		mgmt.PATCH("/auth-files/codex-five-hour-reserve-percent/batch", s.mgmt.PatchCodexFiveHourReservePercent)
 		mgmt.POST("/vertex/import", s.mgmt.ImportVertexCredential)
 
 		mgmt.GET("/anthropic-auth-url", s.mgmt.RequestAnthropicToken)

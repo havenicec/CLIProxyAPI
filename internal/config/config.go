@@ -219,6 +219,10 @@ type QuotaExceeded struct {
 	// When all free-tier auths are exhausted (429/503), the conductor retries with
 	// an auth that has available Google One AI credits.
 	AntigravityCredits bool `yaml:"antigravity-credits" json:"antigravity-credits"`
+
+	// CodexFiveHourReservePercent keeps this percentage of the Codex five-hour quota unused.
+	// Zero disables proactive reserve enforcement.
+	CodexFiveHourReservePercent int `yaml:"codex-five-hour-reserve-percent" json:"codex-five-hour-reserve-percent"`
 }
 
 // RoutingConfig configures how credentials are selected for requests.
@@ -711,6 +715,12 @@ func LoadConfigOptional(configFile string, optional bool) (*Config, error) {
 
 	if cfg.MaxRetryCredentials < 0 {
 		cfg.MaxRetryCredentials = 0
+	}
+
+	if cfg.QuotaExceeded.CodexFiveHourReservePercent < 0 {
+		cfg.QuotaExceeded.CodexFiveHourReservePercent = 0
+	} else if cfg.QuotaExceeded.CodexFiveHourReservePercent > 100 {
+		cfg.QuotaExceeded.CodexFiveHourReservePercent = 100
 	}
 
 	// Sanitize Gemini API key configuration and migrate legacy entries.

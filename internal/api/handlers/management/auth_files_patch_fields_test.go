@@ -280,3 +280,62 @@ func TestPatchAuthFileFields_ArbitraryFieldsPersistToFile(t *testing.T) {
 		t.Fatalf("fgh.ijk = %#v, want true", got)
 	}
 }
+
+func TestPatchCodexFiveHourReservePercent_BatchAndClear(t *testing.T) {
+	t.Setenv("MANAGEMENT_PASSWORD", "")
+	gin.SetMode(gin.TestMode)
+
+	store := &memoryAuthStore{}
+	manager := coreauth.NewManager(store, nil, nil)
+	for _, name := range []string{"codex-a.json", "codex-b.json"} {
+		record := &coreauth.Auth{
+			ID:       name,
+			FileName: name,
+			Provider: "codex",
+			Metadata: map[string]any{"type": "codex"},
+		}
+		if _, errRegister := manager.Register(context.Background(), record); errRegister != nil {
+			t.Fatalf("failed to register auth record: %v", errRegister)
+		}
+	}
+
+	h := NewHandlerWithoutConfigFilePath(&config.Config{AuthDir: t.TempDir()}, manager)
+
+	rec := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(rec)
+	req := httptest.NewRequest(http.MethodPatch, "/v0/management/auth-files/codex-five-hour-reserve-percent", strings.NewReader(`{"names":["codex-a.json","codex-b.json"],"value":35}`))
+	req.Header.Set("Content-Type", "application/json")
+	ctx.Request = req
+	h.PatchCodexFiveHourReservePercent(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	for _, name := range []string{"codex-a.json", "codex-b.json"} {
+		updated, ok := manager.GetByID(name)
+		if !ok || updated == nil {
+			t.Fatalf("expected auth %s to exist", name)
+		}
+		if got, _ := coreauth.CodexFiveHourReservePercentOverride(updated); got != 35 {
+			t.Fatalf("%s reserve = %d, want 35", name, got)
+		}
+	}
+
+	rec = httptest.NewRecorder()
+	ctx, _ = gin.CreateTestContext(rec)
+	req = httptest.NewRequest(http.MethodPatch, "/v0/management/auth-files/codex-five-hour-reserve-percent", strings.NewReader(`{"name":"codex-a.json","value":null}`))
+	req.Header.Set("Content-Type", "application/json")
+	ctx.Request = req
+	h.PatchCodexFiveHourReservePercent(ctx)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected clear status %d, got %d with body %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	updated, ok := manager.GetByID("codex-a.json")
+	if !ok || updated == nil {
+		t.Fatal("expected codex-a.json to exist")
+	}
+	if _, ok := coreauth.CodexFiveHourReservePercentOverride(updated); ok {
+		t.Fatal("expected per-auth reserve override to be cleared")
+	}
+}

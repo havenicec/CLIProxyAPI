@@ -487,6 +487,17 @@ func (h *Handler) buildAuthFileEntry(auth *coreauth.Auth) gin.H {
 	if websockets, ok := authWebsocketsValue(auth); ok {
 		entry["websockets"] = websockets
 	}
+	if strings.EqualFold(strings.TrimSpace(auth.Provider), "codex") {
+		if value, ok := coreauth.CodexFiveHourReservePercentOverride(auth); ok {
+			entry["codex_five_hour_reserve_percent"] = value
+		}
+		entry["effective_codex_five_hour_reserve_percent"] = coreauth.EffectiveCodexFiveHourReservePercent(auth, h.cfg)
+		if auth.Metadata != nil {
+			if quota, ok := auth.Metadata[coreauth.CodexQuotaMetadataKey]; ok && quota != nil {
+				entry["codex_quota"] = quota
+			}
+		}
+	}
 	return entry
 }
 
@@ -1294,6 +1305,114 @@ func (h *Handler) PatchAuthFileFields(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
+// PatchCodexFiveHourReservePercent sets or clears the per-auth Codex reserve override.
+func (h *Handler) PatchCodexFiveHourReservePercent(c *gin.Context) {
+	if h.authManager == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "core auth manager unavailable"})
+		return
+	}
+
+	var req struct {
+		Name  string          `json:"name"`
+		Names []string        `json:"names"`
+		Value json.RawMessage `json:"value"`
+	}
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.UseNumber()
+	if err := decoder.Decode(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+		return
+	}
+	names := uniqueAuthFileNames(append(req.Names, req.Name))
+	if len(names) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
+		return
+	}
+	if len(req.Value) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "value is required"})
+		return
+	}
+
+	var value int
+	clearOverride := bytes.Equal(bytes.TrimSpace(req.Value), []byte("null"))
+	if !clearOverride {
+		decodedValue, errDecode := decodeAuthFileFieldValue(req.Value)
+		if errDecode != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid value"})
+			return
+		}
+		intValue, okValue := authFileIntValue(decodedValue)
+		if !okValue {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid value"})
+			return
+		}
+		value = clampManagementPercent(intValue)
+	}
+
+	ctx := c.Request.Context()
+	updated := make([]gin.H, 0, len(names))
+	failed := make([]gin.H, 0)
+	for _, name := range names {
+		targetAuth := h.findManagedAuth(name)
+		if targetAuth == nil {
+			failed = append(failed, gin.H{"name": name, "error": "auth file not found"})
+			continue
+		}
+		if targetAuth.Metadata == nil {
+			targetAuth.Metadata = make(map[string]any)
+		}
+		if clearOverride {
+			delete(targetAuth.Metadata, coreauth.CodexFiveHourReservePercentMetadataKey)
+			delete(targetAuth.Metadata, coreauth.CodexFiveHourReservePercentMetadataDashKey)
+		} else {
+			targetAuth.Metadata[coreauth.CodexFiveHourReservePercentMetadataKey] = value
+			delete(targetAuth.Metadata, coreauth.CodexFiveHourReservePercentMetadataDashKey)
+		}
+		targetAuth.UpdatedAt = time.Now()
+		if _, err := h.authManager.Update(ctx, targetAuth); err != nil {
+			failed = append(failed, gin.H{"name": name, "error": fmt.Sprintf("failed to update auth: %v", err)})
+			continue
+		}
+		item := gin.H{"name": name, "id": targetAuth.ID}
+		if clearOverride {
+			item["value"] = nil
+			item["inherited"] = true
+		} else {
+			item["value"] = value
+			item["inherited"] = false
+		}
+		updated = append(updated, item)
+	}
+	if len(failed) > 0 {
+		c.JSON(http.StatusMultiStatus, gin.H{"status": "partial", "updated": updated, "failed": failed})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "updated": updated})
+}
+
+func (h *Handler) findManagedAuth(name string) *coreauth.Auth {
+	if h == nil || h.authManager == nil {
+		return nil
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil
+	}
+	if auth, ok := h.authManager.GetByID(name); ok {
+		return auth
+	}
+	auths := h.authManager.List()
+	for _, auth := range auths {
+		if auth == nil {
+			continue
+		}
+		if auth.FileName == name || auth.ID == name || auth.Index == name {
+			return auth
+		}
+	}
+	return nil
 }
 
 func decodeAuthFileFieldValue(raw json.RawMessage) (any, error) {

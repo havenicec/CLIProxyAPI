@@ -112,6 +112,10 @@ type Result struct {
 	Success bool
 	// RetryAfter carries a provider supplied retry hint (e.g. 429 retryDelay).
 	RetryAfter *time.Duration
+	// Headers carries upstream response headers that may include quota state.
+	Headers http.Header
+	// Payload carries the upstream response body when available.
+	Payload []byte
 	// Error describes the failure when Success is false.
 	Error *Error
 }
@@ -829,7 +833,7 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 				if se, ok := errors.AsType[cliproxyexecutor.StatusError](chunk.Err); ok && se != nil {
 					rerr.HTTPStatus = se.StatusCode()
 				}
-				m.MarkResult(ctx, Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr})
+				m.MarkResult(ctx, Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Headers: headers, Error: rerr})
 			}
 			if !forward {
 				return false
@@ -859,7 +863,7 @@ func (m *Manager) wrapStreamResult(ctx context.Context, auth *Auth, provider, re
 			}
 		}
 		if !failed {
-			m.MarkResult(ctx, Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: true})
+			m.MarkResult(ctx, Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: true, Headers: headers})
 		}
 	}()
 	return &cliproxyexecutor.StreamResult{Headers: headers, Chunks: out}
@@ -884,7 +888,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			if se, ok := errors.AsType[cliproxyexecutor.StatusError](errStream); ok && se != nil {
 				rerr.HTTPStatus = se.StatusCode()
 			}
-			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
+			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Headers: headersFromError(errStream), Error: rerr}
 			result.RetryAfter = retryAfterFromError(errStream)
 			m.MarkResult(ctx, result)
 			if isRequestInvalidError(errStream) {
@@ -905,7 +909,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				if se, ok := errors.AsType[cliproxyexecutor.StatusError](bootstrapErr); ok && se != nil {
 					rerr.HTTPStatus = se.StatusCode()
 				}
-				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
+				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Headers: streamResult.Headers, Error: rerr}
 				result.RetryAfter = retryAfterFromError(bootstrapErr)
 				m.MarkResult(ctx, result)
 				discardStreamChunks(streamResult.Chunks)
@@ -916,7 +920,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 				if se, ok := errors.AsType[cliproxyexecutor.StatusError](bootstrapErr); ok && se != nil {
 					rerr.HTTPStatus = se.StatusCode()
 				}
-				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
+				result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Headers: streamResult.Headers, Error: rerr}
 				result.RetryAfter = retryAfterFromError(bootstrapErr)
 				m.MarkResult(ctx, result)
 				discardStreamChunks(streamResult.Chunks)
@@ -927,7 +931,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 			if se, ok := errors.AsType[cliproxyexecutor.StatusError](bootstrapErr); ok && se != nil {
 				rerr.HTTPStatus = se.StatusCode()
 			}
-			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: rerr}
+			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Headers: streamResult.Headers, Error: rerr}
 			result.RetryAfter = retryAfterFromError(bootstrapErr)
 			m.MarkResult(ctx, result)
 			discardStreamChunks(streamResult.Chunks)
@@ -936,7 +940,7 @@ func (m *Manager) executeStreamWithModelPool(ctx context.Context, executor Provi
 
 		if closed && len(buffered) == 0 {
 			emptyErr := &Error{Code: "empty_stream", Message: "upstream stream closed before first payload", Retryable: true}
-			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Error: emptyErr}
+			result := Result{AuthID: auth.ID, Provider: provider, Model: resultModel, Success: false, Headers: streamResult.Headers, Error: emptyErr}
 			m.MarkResult(ctx, result)
 			if idx < len(execModels)-1 {
 				lastErr = emptyErr
@@ -1397,6 +1401,7 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				if errCtx := execCtx.Err(); errCtx != nil {
 					return cliproxyexecutor.Response{}, errCtx
 				}
+				result.Headers = headersFromError(errExec)
 				result.Error = &Error{Message: errExec.Error()}
 				if se, ok := errors.AsType[cliproxyexecutor.StatusError](errExec); ok && se != nil {
 					result.Error.HTTPStatus = se.StatusCode()
@@ -1411,6 +1416,8 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				authErr = errExec
 				continue
 			}
+			result.Headers = resp.Headers
+			result.Payload = resp.Payload
 			m.MarkResult(execCtx, result)
 			return resp, nil
 		}
@@ -1496,6 +1503,7 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				if errCtx := execCtx.Err(); errCtx != nil {
 					return cliproxyexecutor.Response{}, errCtx
 				}
+				result.Headers = headersFromError(errExec)
 				result.Error = &Error{Message: errExec.Error()}
 				if se, ok := errors.AsType[cliproxyexecutor.StatusError](errExec); ok && se != nil {
 					result.Error.HTTPStatus = se.StatusCode()
@@ -1510,6 +1518,8 @@ func (m *Manager) executeCountMixedOnce(ctx context.Context, providers []string,
 				authErr = errExec
 				continue
 			}
+			result.Headers = resp.Headers
+			result.Payload = resp.Payload
 			m.MarkResult(execCtx, result)
 			return resp, nil
 		}
@@ -2330,6 +2340,14 @@ func (m *Manager) MarkResult(ctx context.Context, result Result) {
 			} else {
 				clearAuthStateOnSuccess(auth, now)
 			}
+			if blocked, reason := m.applyCodexQuotaReserveLocked(auth, result, now); blocked {
+				shouldResumeModel = false
+				clearModelQuota = false
+				if result.Model != "" {
+					shouldSuspendModel = true
+					suspendReason = reason
+				}
+			}
 		} else {
 			if result.Model != "" {
 				if !isRequestScopedNotFoundResultError(result.Error) {
@@ -2694,6 +2712,24 @@ func retryAfterFromError(err error) *time.Duration {
 	}
 	value := *retryAfter
 	return &value
+}
+
+func headersFromError(err error) http.Header {
+	if err == nil {
+		return nil
+	}
+	type headerProvider interface {
+		Headers() http.Header
+	}
+	var hp headerProvider
+	if !errors.As(err, &hp) || hp == nil {
+		return nil
+	}
+	headers := hp.Headers()
+	if headers == nil {
+		return nil
+	}
+	return headers.Clone()
 }
 
 func statusCodeFromResult(err *Error) int {
