@@ -282,6 +282,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	body, _ = sjson.DeleteBytes(body, "safety_identifier")
 	body, _ = sjson.DeleteBytes(body, "stream_options")
 	body = normalizeCodexInstructions(body)
+	body = sanitizeCodexToolChoice(body)
 	if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
 		body = ensureImageGenerationTool(body, baseModel, auth)
 	}
@@ -441,6 +442,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	body, _ = sjson.SetBytes(body, "model", baseModel)
 	body, _ = sjson.DeleteBytes(body, "stream")
 	body = normalizeCodexInstructions(body)
+	body = sanitizeCodexToolChoice(body)
 	if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
 		body = ensureImageGenerationTool(body, baseModel, auth)
 	}
@@ -545,6 +547,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	body, _ = sjson.DeleteBytes(body, "stream_options")
 	body, _ = sjson.SetBytes(body, "model", baseModel)
 	body = normalizeCodexInstructions(body)
+	body = sanitizeCodexToolChoice(body)
 	if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
 		body = ensureImageGenerationTool(body, baseModel, auth)
 	}
@@ -1088,6 +1091,122 @@ func ensureImageGenerationTool(body []byte, baseModel string, auth *cliproxyauth
 	}
 	body, _ = sjson.SetRawBytes(body, "tools.-1", imageGenToolJSON)
 	return body
+}
+
+func sanitizeCodexToolChoice(body []byte) []byte {
+	choice := gjson.GetBytes(body, "tool_choice")
+	if !choice.Exists() || choice.Type == gjson.Null {
+		return body
+	}
+
+	tools := gjson.GetBytes(body, "tools")
+	hasTools, toolTypes, toolNames := codexToolChoiceAvailableTools(tools)
+
+	if choice.Type == gjson.String {
+		value := strings.TrimSpace(choice.String())
+		switch strings.ToLower(value) {
+		case "", "auto", "none":
+			return body
+		case "required":
+			if hasTools {
+				return body
+			}
+			return deleteCodexToolChoice(body)
+		default:
+			if codexToolChoiceNameOrTypeExists(value, toolTypes, toolNames) {
+				return body
+			}
+			return deleteCodexToolChoice(body)
+		}
+	}
+
+	if !choice.IsObject() {
+		return deleteCodexToolChoice(body)
+	}
+
+	choiceType := strings.TrimSpace(choice.Get("type").String())
+	switch strings.ToLower(choiceType) {
+	case "", "auto", "none":
+		return body
+	case "required":
+		if hasTools {
+			return body
+		}
+		return deleteCodexToolChoice(body)
+	case "allowed_tools":
+		return body
+	case "tool", "custom":
+		name := strings.TrimSpace(choice.Get("name").String())
+		if name != "" && codexToolChoiceNameOrTypeExists(name, toolTypes, toolNames) {
+			return body
+		}
+		return deleteCodexToolChoice(body)
+	case "function":
+		name := strings.TrimSpace(choice.Get("function.name").String())
+		if name == "" {
+			name = strings.TrimSpace(choice.Get("name").String())
+		}
+		if name != "" && codexToolChoiceNameOrTypeExists(name, toolTypes, toolNames) {
+			return body
+		}
+		return deleteCodexToolChoice(body)
+	default:
+		if codexToolChoiceNameOrTypeExists(choiceType, toolTypes, toolNames) {
+			return body
+		}
+		return deleteCodexToolChoice(body)
+	}
+}
+
+func codexToolChoiceAvailableTools(tools gjson.Result) (bool, map[string]struct{}, map[string]struct{}) {
+	toolTypes := make(map[string]struct{})
+	toolNames := make(map[string]struct{})
+	if !tools.IsArray() {
+		return false, toolTypes, toolNames
+	}
+
+	hasTools := false
+	for _, tool := range tools.Array() {
+		if !tool.IsObject() {
+			continue
+		}
+		hasTools = true
+		codexToolChoiceAddKey(toolTypes, tool.Get("type").String())
+		codexToolChoiceAddKey(toolNames, tool.Get("name").String())
+		codexToolChoiceAddKey(toolNames, tool.Get("function.name").String())
+	}
+
+	return hasTools, toolTypes, toolNames
+}
+
+func codexToolChoiceNameOrTypeExists(value string, toolTypes map[string]struct{}, toolNames map[string]struct{}) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return false
+	}
+	if _, ok := toolTypes[value]; ok {
+		return true
+	}
+	if _, ok := toolNames[value]; ok {
+		return true
+	}
+	return false
+}
+
+func codexToolChoiceAddKey(keys map[string]struct{}, value string) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return
+	}
+	keys[value] = struct{}{}
+}
+
+func deleteCodexToolChoice(body []byte) []byte {
+	updated, err := sjson.DeleteBytes(body, "tool_choice")
+	if err != nil {
+		return body
+	}
+	return updated
 }
 
 func publishCodexImageToolUsage(ctx context.Context, reporter *helps.UsageReporter, body []byte, completedData []byte) {

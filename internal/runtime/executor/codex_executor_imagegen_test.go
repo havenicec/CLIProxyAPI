@@ -117,13 +117,13 @@ func TestEnsureImageGenerationTool_FreeCodexAuthDoesNotInjectTool(t *testing.T) 
 	}
 }
 
-func TestCodexBuildImagesResponsesRequestUsesAutoToolChoice(t *testing.T) {
+func TestCodexBuildImagesResponsesRequestRequiresImageTool(t *testing.T) {
 	tool := []byte(`{"type":"image_generation","action":"edit","model":"gpt-image-2"}`)
 
 	req := codexBuildImagesResponsesRequest("edit this", []string{"data:image/png;base64,AA=="}, tool)
 
-	if got := gjson.GetBytes(req, "tool_choice").String(); got != "auto" {
-		t.Fatalf("tool_choice = %q, want auto; body=%s", got, string(req))
+	if got := gjson.GetBytes(req, "tool_choice").String(); got != "required" {
+		t.Fatalf("tool_choice = %q, want required; body=%s", got, string(req))
 	}
 	if got := gjson.GetBytes(req, "tools.0.type").String(); got != "image_generation" {
 		t.Fatalf("tools.0.type = %q, want image_generation; body=%s", got, string(req))

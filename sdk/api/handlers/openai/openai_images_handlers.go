@@ -1006,7 +1006,7 @@ func (h *OpenAIAPIHandler) imagesEditsFromJSON(c *gin.Context) {
 }
 
 func buildImagesResponsesRequest(prompt string, images []string, toolJSON []byte) []byte {
-	req := []byte(`{"instructions":"","stream":true,"reasoning":{"effort":"medium","summary":"auto"},"parallel_tool_calls":true,"include":["reasoning.encrypted_content"],"model":"","store":false,"tool_choice":"auto"}`)
+	req := []byte(`{"instructions":"","stream":true,"reasoning":{"effort":"medium","summary":"auto"},"parallel_tool_calls":true,"include":["reasoning.encrypted_content"],"model":"","store":false}`)
 	mainModel := defaultImagesMainModel
 	if len(toolJSON) > 0 && json.Valid(toolJSON) {
 		toolModel := strings.TrimSpace(gjson.GetBytes(toolJSON, "model").String())
@@ -1037,6 +1037,7 @@ func buildImagesResponsesRequest(prompt string, images []string, toolJSON []byte
 	req, _ = sjson.SetRawBytes(req, "tools", []byte(`[]`))
 	if len(toolJSON) > 0 && json.Valid(toolJSON) {
 		req, _ = sjson.SetRawBytes(req, "tools.-1", toolJSON)
+		req, _ = sjson.SetBytes(req, "tool_choice", "required")
 	}
 	return req
 }

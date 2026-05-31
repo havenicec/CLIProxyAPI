@@ -318,6 +318,7 @@ func (e *CodexExecutor) prepareCodexOpenAIImageBody(body []byte, req cliproxyexe
 	out, _ = sjson.DeleteBytes(out, "prompt_cache_retention")
 	out, _ = sjson.DeleteBytes(out, "safety_identifier")
 	out, _ = sjson.DeleteBytes(out, "stream_options")
+	out = sanitizeCodexToolChoice(out)
 	return normalizeCodexInstructions(out), nil
 }
 
@@ -506,7 +507,7 @@ func codexBuildOpenAIImageTool(rawJSON []byte, routeModel string, action string,
 }
 
 func codexBuildImagesResponsesRequest(prompt string, images []string, toolJSON []byte) []byte {
-	req := []byte(`{"instructions":"","stream":true,"reasoning":{"effort":"medium","summary":"auto"},"parallel_tool_calls":true,"include":["reasoning.encrypted_content"],"model":"","store":false,"tool_choice":"auto"}`)
+	req := []byte(`{"instructions":"","stream":true,"reasoning":{"effort":"medium","summary":"auto"},"parallel_tool_calls":true,"include":["reasoning.encrypted_content"],"model":"","store":false}`)
 	req, _ = sjson.SetBytes(req, "model", codexOpenAIImagesMainModel)
 
 	input := []byte(`[{"type":"message","role":"user","content":[{"type":"input_text","text":""}]}]`)
@@ -526,6 +527,7 @@ func codexBuildImagesResponsesRequest(prompt string, images []string, toolJSON [
 	req, _ = sjson.SetRawBytes(req, "tools", []byte(`[]`))
 	if len(toolJSON) > 0 && json.Valid(toolJSON) {
 		req, _ = sjson.SetRawBytes(req, "tools.-1", toolJSON)
+		req, _ = sjson.SetBytes(req, "tool_choice", "required")
 	}
 	return req
 }
