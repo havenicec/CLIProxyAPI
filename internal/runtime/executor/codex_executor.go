@@ -1109,7 +1109,7 @@ func sanitizeCodexToolChoice(body []byte) []byte {
 	}
 
 	tools := gjson.GetBytes(body, "tools")
-	hasTools, toolTypes, toolNames := codexToolChoiceAvailableTools(tools)
+	_, toolTypes, toolNames := codexToolChoiceAvailableTools(tools)
 
 	if choice.Type == gjson.String {
 		value := strings.TrimSpace(choice.String())
@@ -1117,9 +1117,6 @@ func sanitizeCodexToolChoice(body []byte) []byte {
 		case "", "auto", "none":
 			return body
 		case "required":
-			if hasTools {
-				return body
-			}
 			return deleteCodexToolChoice(body)
 		default:
 			if codexToolChoiceNameOrTypeExists(value, toolTypes, toolNames) {
@@ -1138,9 +1135,6 @@ func sanitizeCodexToolChoice(body []byte) []byte {
 	case "", "auto", "none":
 		return body
 	case "required":
-		if hasTools {
-			return body
-		}
 		return deleteCodexToolChoice(body)
 	case "allowed_tools":
 		return body

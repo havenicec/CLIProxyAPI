@@ -53,6 +53,45 @@ func TestCodexExecutorExecuteNormalizesNullInstructions(t *testing.T) {
 	}
 }
 
+func TestCodexExecutorExecuteStripsRequiredToolChoiceUpstream(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		gotBody = body
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":0,\"status\":\"completed\",\"background\":false,\"error\":null}}\n\n"))
+	}))
+	defer server.Close()
+
+	executor := NewCodexExecutor(&config.Config{})
+	auth := &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL,
+		"api_key":  "test",
+	}}
+
+	_, err := executor.Execute(context.Background(), auth, cliproxyexecutor.Request{
+		Model: "gpt-5.4",
+		Payload: []byte(`{
+			"model":"gpt-5.4",
+			"input":"hello",
+			"tools":[{"type":"function","name":"lookup","parameters":{"type":"object"}}],
+			"tool_choice":"required"
+		}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Stream:       false,
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	if gjson.GetBytes(gotBody, "tool_choice").Exists() {
+		t.Fatalf("tool_choice should be stripped before upstream, got %s", string(gotBody))
+	}
+	if !gjson.GetBytes(gotBody, "tools").IsArray() {
+		t.Fatalf("tools should remain available, got %s", string(gotBody))
+	}
+}
+
 func TestCodexExecutorExecuteStreamNormalizesNullInstructions(t *testing.T) {
 	var gotPath string
 	var gotBody []byte

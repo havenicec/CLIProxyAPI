@@ -26,13 +26,23 @@ func TestSanitizeCodexToolChoice_RemovesRequiredWithEmptyTools(t *testing.T) {
 	}
 }
 
-func TestSanitizeCodexToolChoice_KeepsRequiredWithTools(t *testing.T) {
+func TestSanitizeCodexToolChoice_RemovesRequiredWithTools(t *testing.T) {
 	body := []byte(`{"model":"gpt-5.4","input":"hi","tools":[{"type":"function","name":"lookup"}],"tool_choice":"required"}`)
 
 	out := sanitizeCodexToolChoice(body)
 
-	if got := gjson.GetBytes(out, "tool_choice").String(); got != "required" {
-		t.Fatalf("tool_choice = %q, want required; body=%s", got, string(out))
+	if gjson.GetBytes(out, "tool_choice").Exists() {
+		t.Fatalf("expected tool_choice to be removed, got %s", string(out))
+	}
+}
+
+func TestSanitizeCodexToolChoice_RemovesObjectRequiredWithTools(t *testing.T) {
+	body := []byte(`{"model":"gpt-5.4","input":"hi","tools":[{"type":"function","name":"lookup"}],"tool_choice":{"type":"required"}}`)
+
+	out := sanitizeCodexToolChoice(body)
+
+	if gjson.GetBytes(out, "tool_choice").Exists() {
+		t.Fatalf("expected tool_choice to be removed, got %s", string(out))
 	}
 }
 
