@@ -1,9 +1,16 @@
 package executor
 
 import (
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
+	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 	"github.com/tidwall/gjson"
 )
 
@@ -117,18 +124,83 @@ func TestEnsureImageGenerationTool_FreeCodexAuthDoesNotInjectTool(t *testing.T) 
 	}
 }
 
-func TestCodexBuildImagesResponsesRequestRequiresImageTool(t *testing.T) {
+func TestCodexBuildImagesResponsesRequestConfiguresImageTool(t *testing.T) {
 	tool := []byte(`{"type":"image_generation","action":"edit","model":"gpt-image-2"}`)
 
 	req := codexBuildImagesResponsesRequest("edit this", []string{"data:image/png;base64,AA=="}, tool)
 
-	if got := gjson.GetBytes(req, "tool_choice").String(); got != "required" {
-		t.Fatalf("tool_choice = %q, want required; body=%s", got, string(req))
+	if got := gjson.GetBytes(req, "tool_choice").String(); got != "auto" {
+		t.Fatalf("tool_choice = %q, want auto; body=%s", got, string(req))
 	}
 	if got := gjson.GetBytes(req, "tools.0.type").String(); got != "image_generation" {
 		t.Fatalf("tools.0.type = %q, want image_generation; body=%s", got, string(req))
 	}
 	if got := gjson.GetBytes(req, "input.0.content.1.type").String(); got != "input_image" {
 		t.Fatalf("input image part type = %q, want input_image; body=%s", got, string(req))
+	}
+}
+
+func TestPrepareCodexOpenAIImageBodyRestoresImageTool(t *testing.T) {
+	body := []byte(`{"instructions":"","stream":true,"model":"gpt-5.4-mini","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"draw"}]}],"tool_choice":{"type":"image_generation"}}`)
+
+	out, err := NewCodexExecutor(&config.Config{}).prepareCodexOpenAIImageBody(body, cliproxyexecutor.Request{
+		Model:   "gpt-image-2",
+		Payload: []byte(`{"model":"gpt-image-2","prompt":"draw"}`),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-image"),
+		Metadata: map[string]any{
+			cliproxyexecutor.RequestPathMetadataKey: "/v1/images/generations",
+		},
+	}, "gpt-5.4-mini")
+	if err != nil {
+		t.Fatalf("prepareCodexOpenAIImageBody error: %v", err)
+	}
+
+	if got := gjson.GetBytes(out, "tool_choice").String(); got != "auto" {
+		t.Fatalf("tool_choice = %q, want auto; body=%s", got, string(out))
+	}
+	if got := gjson.GetBytes(out, "tools.0.type").String(); got != "image_generation" {
+		t.Fatalf("tools.0.type = %q, want image_generation; body=%s", got, string(out))
+	}
+}
+
+func TestCodexExecutorImageEndpointResponsesPathConfiguresImageTool(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, errRead := io.ReadAll(r.Body)
+		if errRead != nil {
+			t.Fatalf("read body: %v", errRead)
+		}
+		gotBody = body
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":0,\"status\":\"completed\",\"background\":false,\"error\":null}}\n\n"))
+	}))
+	defer server.Close()
+
+	executor := NewCodexExecutor(&config.Config{})
+	result, err := executor.ExecuteStream(context.Background(), &cliproxyauth.Auth{Attributes: map[string]string{
+		"base_url": server.URL,
+		"api_key":  "test",
+	}}, cliproxyexecutor.Request{
+		Model:   "gpt-5.4-mini",
+		Payload: codexBuildImagesResponsesRequest("draw", nil, []byte(`{"type":"image_generation","action":"generate","model":"gpt-image-2"}`)),
+	}, cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("openai-response"),
+		Stream:       true,
+		Metadata: map[string]any{
+			cliproxyexecutor.RequestPathMetadataKey: "/v1/images/generations",
+		},
+	})
+	if err != nil {
+		t.Fatalf("ExecuteStream error: %v", err)
+	}
+	for range result.Chunks {
+	}
+
+	if got := gjson.GetBytes(gotBody, "tool_choice").String(); got != "auto" {
+		t.Fatalf("tool_choice = %q, want auto; body=%s", got, string(gotBody))
+	}
+	if got := gjson.GetBytes(gotBody, "tools.0.type").String(); got != "image_generation" {
+		t.Fatalf("tools.0.type = %q, want image_generation; body=%s", got, string(gotBody))
 	}
 }

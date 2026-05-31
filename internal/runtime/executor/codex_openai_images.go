@@ -33,6 +33,13 @@ const (
 	codexOpenAIImagesMainModel   = "gpt-5.4-mini"
 )
 
+var (
+	codexImageGenerationAutoToolChoiceJSON = []byte(`"auto"`)
+	codexMinimalImageGenerationToolJSON    = []byte(`{"type":"image_generation"}`)
+)
+
+const codexImageGenerationInstructions = "Use the image_generation tool to fulfill this image API request. Do not produce text-only output."
+
 type codexOpenAIImagePreparedRequest struct {
 	Body           []byte
 	ResponseFormat string
@@ -318,6 +325,9 @@ func (e *CodexExecutor) prepareCodexOpenAIImageBody(body []byte, req cliproxyexe
 	out, _ = sjson.DeleteBytes(out, "prompt_cache_retention")
 	out, _ = sjson.DeleteBytes(out, "safety_identifier")
 	out, _ = sjson.DeleteBytes(out, "stream_options")
+	if e == nil || e.cfg == nil || e.cfg.DisableImageGeneration != config.DisableImageGenerationAll {
+		out = ensureCodexImageGenerationToolForImageRequest(out)
+	}
 	out = sanitizeCodexToolChoice(out)
 	return normalizeCodexInstructions(out), nil
 }
@@ -526,10 +536,39 @@ func codexBuildImagesResponsesRequest(prompt string, images []string, toolJSON [
 
 	req, _ = sjson.SetRawBytes(req, "tools", []byte(`[]`))
 	if len(toolJSON) > 0 && json.Valid(toolJSON) {
-		req, _ = sjson.SetRawBytes(req, "tools.-1", toolJSON)
-		req, _ = sjson.SetBytes(req, "tool_choice", "required")
+		tools := []byte(`[]`)
+		tools, _ = sjson.SetRawBytes(tools, "-1", toolJSON)
+		req, _ = sjson.SetRawBytes(req, "tools", tools)
+		req, _ = sjson.SetBytes(req, "instructions", codexImageGenerationInstructions)
+		req, _ = sjson.SetRawBytes(req, "tool_choice", codexImageGenerationAutoToolChoiceJSON)
 	}
 	return req
+}
+
+func ensureCodexImageGenerationToolForImageRequest(body []byte) []byte {
+	tools := gjson.GetBytes(body, "tools")
+	if tools.IsArray() {
+		for _, tool := range tools.Array() {
+			if tool.Get("type").String() == "image_generation" {
+				return ensureCodexImageGenerationRequestControls(body)
+			}
+		}
+	} else {
+		body, _ = sjson.SetRawBytes(body, "tools", []byte(`[]`))
+	}
+
+	body, _ = sjson.SetRawBytes(body, "tools.-1", codexMinimalImageGenerationToolJSON)
+	body = ensureCodexImageGenerationRequestControls(body)
+	return body
+}
+
+func ensureCodexImageGenerationRequestControls(body []byte) []byte {
+	instructions := strings.TrimSpace(gjson.GetBytes(body, "instructions").String())
+	if instructions == "" {
+		body, _ = sjson.SetBytes(body, "instructions", codexImageGenerationInstructions)
+	}
+	body, _ = sjson.SetRawBytes(body, "tool_choice", codexImageGenerationAutoToolChoiceJSON)
+	return body
 }
 
 func codexFormValue(form *multipart.Form, key string) string {

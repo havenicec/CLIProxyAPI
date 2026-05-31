@@ -34,6 +34,7 @@ const (
 	xaiImagesDefaultResolution  = "1k"
 	imagesGenerationsPath       = "/v1/images/generations"
 	imagesEditsPath             = "/v1/images/edits"
+	imagesToolInstructions      = "Use the image_generation tool to fulfill this image API request. Do not produce text-only output."
 )
 
 type imageCallResult struct {
@@ -1036,8 +1037,11 @@ func buildImagesResponsesRequest(prompt string, images []string, toolJSON []byte
 
 	req, _ = sjson.SetRawBytes(req, "tools", []byte(`[]`))
 	if len(toolJSON) > 0 && json.Valid(toolJSON) {
-		req, _ = sjson.SetRawBytes(req, "tools.-1", toolJSON)
-		req, _ = sjson.SetBytes(req, "tool_choice", "required")
+		tools := []byte(`[]`)
+		tools, _ = sjson.SetRawBytes(tools, "-1", toolJSON)
+		req, _ = sjson.SetRawBytes(req, "tools", tools)
+		req, _ = sjson.SetBytes(req, "instructions", imagesToolInstructions)
+		req, _ = sjson.SetBytes(req, "tool_choice", "auto")
 	}
 	return req
 }
