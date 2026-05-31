@@ -1041,7 +1041,7 @@ func buildImagesResponsesRequest(prompt string, images []string, toolJSON []byte
 		tools, _ = sjson.SetRawBytes(tools, "-1", toolJSON)
 		req, _ = sjson.SetRawBytes(req, "tools", tools)
 		req, _ = sjson.SetBytes(req, "instructions", imagesToolInstructions)
-		req, _ = sjson.SetBytes(req, "tool_choice", "auto")
+		req, _ = sjson.SetBytes(req, "tool_choice", "required")
 	}
 	return req
 }

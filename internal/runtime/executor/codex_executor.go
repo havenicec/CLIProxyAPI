@@ -282,10 +282,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	body, _ = sjson.DeleteBytes(body, "safety_identifier")
 	body, _ = sjson.DeleteBytes(body, "stream_options")
 	body = normalizeCodexInstructions(body)
-	if codexIsImagesEndpointPath(requestPath) && (e.cfg == nil || e.cfg.DisableImageGeneration != config.DisableImageGenerationAll) {
-		body = ensureCodexImageGenerationToolForImageRequest(body)
-	}
-	body = sanitizeCodexToolChoice(body)
+	body = sanitizeCodexToolChoiceForRequest(body, requestPath, e.cfg == nil || e.cfg.DisableImageGeneration != config.DisableImageGenerationAll)
 	if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
 		body = ensureImageGenerationTool(body, baseModel, auth)
 	}
@@ -445,10 +442,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	body, _ = sjson.SetBytes(body, "model", baseModel)
 	body, _ = sjson.DeleteBytes(body, "stream")
 	body = normalizeCodexInstructions(body)
-	if codexIsImagesEndpointPath(requestPath) && (e.cfg == nil || e.cfg.DisableImageGeneration != config.DisableImageGenerationAll) {
-		body = ensureCodexImageGenerationToolForImageRequest(body)
-	}
-	body = sanitizeCodexToolChoice(body)
+	body = sanitizeCodexToolChoiceForRequest(body, requestPath, e.cfg == nil || e.cfg.DisableImageGeneration != config.DisableImageGenerationAll)
 	if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
 		body = ensureImageGenerationTool(body, baseModel, auth)
 	}
@@ -553,10 +547,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	body, _ = sjson.DeleteBytes(body, "stream_options")
 	body, _ = sjson.SetBytes(body, "model", baseModel)
 	body = normalizeCodexInstructions(body)
-	if codexIsImagesEndpointPath(requestPath) && (e.cfg == nil || e.cfg.DisableImageGeneration != config.DisableImageGenerationAll) {
-		body = ensureCodexImageGenerationToolForImageRequest(body)
-	}
-	body = sanitizeCodexToolChoice(body)
+	body = sanitizeCodexToolChoiceForRequest(body, requestPath, e.cfg == nil || e.cfg.DisableImageGeneration != config.DisableImageGenerationAll)
 	if e.cfg == nil || e.cfg.DisableImageGeneration == config.DisableImageGenerationOff {
 		body = ensureImageGenerationTool(body, baseModel, auth)
 	}

@@ -129,8 +129,8 @@ func TestCodexBuildImagesResponsesRequestConfiguresImageTool(t *testing.T) {
 
 	req := codexBuildImagesResponsesRequest("edit this", []string{"data:image/png;base64,AA=="}, tool)
 
-	if got := gjson.GetBytes(req, "tool_choice").String(); got != "auto" {
-		t.Fatalf("tool_choice = %q, want auto; body=%s", got, string(req))
+	if got := gjson.GetBytes(req, "tool_choice").String(); got != "required" {
+		t.Fatalf("tool_choice = %q, want required; body=%s", got, string(req))
 	}
 	if got := gjson.GetBytes(req, "tools.0.type").String(); got != "image_generation" {
 		t.Fatalf("tools.0.type = %q, want image_generation; body=%s", got, string(req))
@@ -156,8 +156,8 @@ func TestPrepareCodexOpenAIImageBodyRestoresImageTool(t *testing.T) {
 		t.Fatalf("prepareCodexOpenAIImageBody error: %v", err)
 	}
 
-	if got := gjson.GetBytes(out, "tool_choice").String(); got != "auto" {
-		t.Fatalf("tool_choice = %q, want auto; body=%s", got, string(out))
+	if got := gjson.GetBytes(out, "tool_choice").String(); got != "required" {
+		t.Fatalf("tool_choice = %q, want required; body=%s", got, string(out))
 	}
 	if got := gjson.GetBytes(out, "tools.0.type").String(); got != "image_generation" {
 		t.Fatalf("tools.0.type = %q, want image_generation; body=%s", got, string(out))
@@ -197,8 +197,8 @@ func TestCodexExecutorImageEndpointResponsesPathConfiguresImageTool(t *testing.T
 	for range result.Chunks {
 	}
 
-	if got := gjson.GetBytes(gotBody, "tool_choice").String(); got != "auto" {
-		t.Fatalf("tool_choice = %q, want auto; body=%s", got, string(gotBody))
+	if got := gjson.GetBytes(gotBody, "tool_choice").String(); got != "required" {
+		t.Fatalf("tool_choice = %q, want required; body=%s", got, string(gotBody))
 	}
 	if got := gjson.GetBytes(gotBody, "tools.0.type").String(); got != "image_generation" {
 		t.Fatalf("tools.0.type = %q, want image_generation; body=%s", got, string(gotBody))

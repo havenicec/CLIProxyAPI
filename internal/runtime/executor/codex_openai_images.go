@@ -34,8 +34,8 @@ const (
 )
 
 var (
-	codexImageGenerationAutoToolChoiceJSON = []byte(`"auto"`)
-	codexMinimalImageGenerationToolJSON    = []byte(`{"type":"image_generation"}`)
+	codexImageGenerationRequiredToolChoiceJSON = []byte(`"required"`)
+	codexMinimalImageGenerationToolJSON        = []byte(`{"type":"image_generation"}`)
 )
 
 const codexImageGenerationInstructions = "Use the image_generation tool to fulfill this image API request. Do not produce text-only output."
@@ -325,10 +325,7 @@ func (e *CodexExecutor) prepareCodexOpenAIImageBody(body []byte, req cliproxyexe
 	out, _ = sjson.DeleteBytes(out, "prompt_cache_retention")
 	out, _ = sjson.DeleteBytes(out, "safety_identifier")
 	out, _ = sjson.DeleteBytes(out, "stream_options")
-	if e == nil || e.cfg == nil || e.cfg.DisableImageGeneration != config.DisableImageGenerationAll {
-		out = ensureCodexImageGenerationToolForImageRequest(out)
-	}
-	out = sanitizeCodexToolChoice(out)
+	out = sanitizeCodexToolChoiceForRequest(out, requestPath, e == nil || e.cfg == nil || e.cfg.DisableImageGeneration != config.DisableImageGenerationAll)
 	return normalizeCodexInstructions(out), nil
 }
 
@@ -540,7 +537,7 @@ func codexBuildImagesResponsesRequest(prompt string, images []string, toolJSON [
 		tools, _ = sjson.SetRawBytes(tools, "-1", toolJSON)
 		req, _ = sjson.SetRawBytes(req, "tools", tools)
 		req, _ = sjson.SetBytes(req, "instructions", codexImageGenerationInstructions)
-		req, _ = sjson.SetRawBytes(req, "tool_choice", codexImageGenerationAutoToolChoiceJSON)
+		req, _ = sjson.SetRawBytes(req, "tool_choice", codexImageGenerationRequiredToolChoiceJSON)
 	}
 	return req
 }
@@ -567,7 +564,15 @@ func ensureCodexImageGenerationRequestControls(body []byte) []byte {
 	if instructions == "" {
 		body, _ = sjson.SetBytes(body, "instructions", codexImageGenerationInstructions)
 	}
-	body, _ = sjson.SetRawBytes(body, "tool_choice", codexImageGenerationAutoToolChoiceJSON)
+	body, _ = sjson.SetRawBytes(body, "tool_choice", codexImageGenerationRequiredToolChoiceJSON)
+	return body
+}
+
+func sanitizeCodexToolChoiceForRequest(body []byte, requestPath string, imageGenerationAllowed bool) []byte {
+	body = sanitizeCodexToolChoice(body)
+	if imageGenerationAllowed && codexIsImagesEndpointPath(requestPath) {
+		return ensureCodexImageGenerationToolForImageRequest(body)
+	}
 	return body
 }
 
