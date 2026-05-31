@@ -93,6 +93,74 @@ func TestCodexWebsocketsExecutePreservesPreviousResponseIDUpstream(t *testing.T)
 	}
 }
 
+func TestCodexWebsocketsExecutionSessionDialsNewConnWhenAuthChanges(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	authHeaders := make(chan string, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/responses" {
+			t.Fatalf("request path = %s, want /responses", r.URL.Path)
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Fatalf("upgrade websocket: %v", err)
+		}
+		defer func() { _ = conn.Close() }()
+		authHeaders <- r.Header.Get("Authorization")
+
+		for {
+			msgType, _, errRead := conn.ReadMessage()
+			if errRead != nil {
+				return
+			}
+			if msgType != websocket.TextMessage {
+				t.Errorf("message type = %d, want text", msgType)
+				return
+			}
+			completed := []byte(`{"type":"response.completed","response":{"id":"resp-ok","output":[],"usage":{"input_tokens":0,"output_tokens":0,"total_tokens":0}}}`)
+			if errWrite := conn.WriteMessage(websocket.TextMessage, completed); errWrite != nil {
+				return
+			}
+		}
+	}))
+	defer server.Close()
+
+	exec := NewCodexWebsocketsExecutor(&config.Config{SDKConfig: config.SDKConfig{DisableImageGeneration: config.DisableImageGenerationAll}})
+	authA := &cliproxyauth.Auth{ID: "auth-a", Attributes: map[string]string{"api_key": "token-a", "base_url": server.URL}}
+	authB := &cliproxyauth.Auth{ID: "auth-b", Attributes: map[string]string{"api_key": "token-b", "base_url": server.URL}}
+	req := cliproxyexecutor.Request{
+		Model:   "gpt-5-codex",
+		Payload: []byte(`{"model":"gpt-5-codex","input":[{"type":"message","id":"msg-1"}]}`),
+	}
+	opts := cliproxyexecutor.Options{
+		SourceFormat: sdktranslator.FromString("codex"),
+		Metadata:     map[string]any{cliproxyexecutor.ExecutionSessionMetadataKey: "downstream-session-1"},
+	}
+
+	if _, err := exec.Execute(context.Background(), authA, req, opts); err != nil {
+		t.Fatalf("Execute(authA) error = %v", err)
+	}
+	select {
+	case got := <-authHeaders:
+		if got != "Bearer token-a" {
+			t.Fatalf("first Authorization = %q, want Bearer token-a", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for first upstream websocket handshake")
+	}
+
+	if _, err := exec.Execute(context.Background(), authB, req, opts); err != nil {
+		t.Fatalf("Execute(authB) error = %v", err)
+	}
+	select {
+	case got := <-authHeaders:
+		if got != "Bearer token-b" {
+			t.Fatalf("second Authorization = %q, want Bearer token-b", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("second request reused the first auth websocket connection")
+	}
+}
+
 func TestCodexWebsocketsUpstreamDisconnectChanSignalsOnInvalidate(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -347,7 +415,7 @@ func TestApplyCodexWebsocketHeadersPreservesExplicitAPIKeyUserAgent(t *testing.T
 func TestApplyCodexPromptCacheHeadersSetsLowercaseSessionAndLegacyConversation(t *testing.T) {
 	req := cliproxyexecutor.Request{Model: "gpt-5-codex", Payload: []byte(`{"prompt_cache_key":"cache-1"}`)}
 
-	_, headers := applyCodexPromptCacheHeaders("openai-response", req, []byte(`{"model":"gpt-5-codex"}`))
+	_, headers := applyCodexPromptCacheHeaders("openai-response", req, []byte(`{"model":"gpt-5-codex"}`), nil)
 
 	if got := headerValueCaseInsensitive(headers, "session_id"); got != "cache-1" {
 		t.Fatalf("session_id = %s, want cache-1", got)
@@ -357,6 +425,38 @@ func TestApplyCodexPromptCacheHeadersSetsLowercaseSessionAndLegacyConversation(t
 	}
 	if got := headers.Get("Conversation_id"); got != "cache-1" {
 		t.Fatalf("Conversation_id = %s, want cache-1", got)
+	}
+}
+
+func TestApplyCodexPromptCacheHeadersScopesSessionByOAuthAccount(t *testing.T) {
+	req := cliproxyexecutor.Request{Model: "gpt-5-codex", Payload: []byte(`{"prompt_cache_key":"cache-1"}`)}
+	authA := &cliproxyauth.Auth{ID: "auth-a", Provider: "codex", Metadata: map[string]any{"account_id": "acct-a"}}
+	authB := &cliproxyauth.Auth{ID: "auth-b", Provider: "codex", Metadata: map[string]any{"account_id": "acct-b"}}
+
+	bodyA, headersA := applyCodexPromptCacheHeaders("openai-response", req, []byte(`{"model":"gpt-5-codex"}`), authA)
+	bodyA2, _ := applyCodexPromptCacheHeaders("openai-response", req, []byte(`{"model":"gpt-5-codex"}`), authA)
+	bodyB, headersB := applyCodexPromptCacheHeaders("openai-response", req, []byte(`{"model":"gpt-5-codex"}`), authB)
+
+	cacheA := gjson.GetBytes(bodyA, "prompt_cache_key").String()
+	cacheA2 := gjson.GetBytes(bodyA2, "prompt_cache_key").String()
+	cacheB := gjson.GetBytes(bodyB, "prompt_cache_key").String()
+	if cacheA == "" || cacheA == "cache-1" {
+		t.Fatalf("auth A prompt_cache_key = %q, want account-scoped replacement", cacheA)
+	}
+	if cacheA2 != cacheA {
+		t.Fatalf("auth A prompt_cache_key is not stable: %q then %q", cacheA, cacheA2)
+	}
+	if cacheB == "" || cacheB == cacheA {
+		t.Fatalf("auth B prompt_cache_key = %q, want distinct from auth A %q", cacheB, cacheA)
+	}
+	if got := headerValueCaseInsensitive(headersA, "session_id"); got != cacheA {
+		t.Fatalf("auth A session_id = %q, want %q", got, cacheA)
+	}
+	if got := headersA.Get("Conversation_id"); got != cacheA {
+		t.Fatalf("auth A Conversation_id = %q, want %q", got, cacheA)
+	}
+	if got := headerValueCaseInsensitive(headersB, "session_id"); got != cacheB {
+		t.Fatalf("auth B session_id = %q, want %q", got, cacheB)
 	}
 }
 

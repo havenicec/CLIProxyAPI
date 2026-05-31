@@ -289,7 +289,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 	reporter.SetTranslatedReasoningEffort(body, to.String())
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
-	httpReq, err := e.cacheHelper(ctx, from, url, req, body)
+	httpReq, err := e.cacheHelper(ctx, from, url, req, body, auth)
 	if err != nil {
 		return resp, err
 	}
@@ -448,7 +448,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 	reporter.SetTranslatedReasoningEffort(body, to.String())
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses/compact"
-	httpReq, err := e.cacheHelper(ctx, from, url, req, body)
+	httpReq, err := e.cacheHelper(ctx, from, url, req, body, auth)
 	if err != nil {
 		return resp, err
 	}
@@ -552,7 +552,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 	reporter.SetTranslatedReasoningEffort(body, to.String())
 
 	url := strings.TrimSuffix(baseURL, "/") + "/responses"
-	httpReq, err := e.cacheHelper(ctx, from, url, req, body)
+	httpReq, err := e.cacheHelper(ctx, from, url, req, body, auth)
 	if err != nil {
 		return nil, err
 	}
@@ -859,7 +859,7 @@ func (e *CodexExecutor) Refresh(ctx context.Context, auth *cliproxyauth.Auth) (*
 	return auth, nil
 }
 
-func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Format, url string, req cliproxyexecutor.Request, rawJSON []byte) (*http.Request, error) {
+func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Format, url string, req cliproxyexecutor.Request, rawJSON []byte, auth *cliproxyauth.Auth) (*http.Request, error) {
 	var cache helps.CodexCache
 	if from == "claude" {
 		userIDResult := gjson.GetBytes(req.Payload, "metadata.user_id")
@@ -886,6 +886,7 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 	}
 
 	if cache.ID != "" {
+		cache.ID = scopedCodexUpstreamSessionID(auth, cache.ID)
 		rawJSON, _ = sjson.SetBytes(rawJSON, "prompt_cache_key", cache.ID)
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(rawJSON))
@@ -901,6 +902,7 @@ func (e *CodexExecutor) cacheHelper(ctx context.Context, from sdktranslator.Form
 func applyCodexHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, stream bool, cfg *config.Config) {
 	r.Header.Set("Content-Type", "application/json")
 	r.Header.Set("Authorization", "Bearer "+token)
+	hadSessionID := strings.TrimSpace(r.Header.Get("Session_id")) != ""
 
 	var ginHeaders http.Header
 	if ginCtx, ok := r.Context().Value("gin").(*gin.Context); ok && ginCtx != nil && ginCtx.Request != nil {
@@ -918,6 +920,11 @@ func applyCodexHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, s
 
 	if strings.Contains(r.Header.Get("User-Agent"), "Mac OS") {
 		misc.EnsureHeader(r.Header, ginHeaders, "Session_id", uuid.NewString())
+	}
+	if !hadSessionID {
+		if sessionID := strings.TrimSpace(r.Header.Get("Session_id")); sessionID != "" {
+			r.Header.Set("Session_id", scopedCodexUpstreamSessionID(auth, sessionID))
+		}
 	}
 
 	if stream {
@@ -950,6 +957,35 @@ func applyCodexHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, s
 		attrs = auth.Attributes
 	}
 	util.ApplyCustomHeadersFromAttrs(r, attrs)
+}
+
+func scopedCodexUpstreamSessionID(auth *cliproxyauth.Auth, sessionID string) string {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" || codexAuthUsesAPIKey(auth) {
+		return sessionID
+	}
+	scope := codexAuthScopeKey(auth)
+	if scope == "" {
+		return sessionID
+	}
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte("cli-proxy-api:codex:upstream-session:"+scope+":"+sessionID)).String()
+}
+
+func codexAuthScopeKey(auth *cliproxyauth.Auth) string {
+	if auth == nil {
+		return ""
+	}
+	if auth.Metadata != nil {
+		if accountID, ok := auth.Metadata["account_id"].(string); ok {
+			if trimmed := strings.TrimSpace(accountID); trimmed != "" {
+				return "account:" + trimmed
+			}
+		}
+	}
+	if trimmed := strings.TrimSpace(auth.ID); trimmed != "" {
+		return "auth:" + trimmed
+	}
+	return ""
 }
 
 func newCodexStatusErr(statusCode int, body []byte) statusErr {

@@ -221,7 +221,7 @@ func (e *CodexWebsocketsExecutor) Execute(ctx context.Context, auth *cliproxyaut
 		return resp, err
 	}
 
-	body, wsHeaders := applyCodexPromptCacheHeaders(from, req, body)
+	body, wsHeaders := applyCodexPromptCacheHeaders(from, req, body, auth)
 	reporter.SetTranslatedReasoningEffort(body, to.String())
 	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg)
 
@@ -426,7 +426,7 @@ func (e *CodexWebsocketsExecutor) ExecuteStream(ctx context.Context, auth *clipr
 		return nil, err
 	}
 
-	body, wsHeaders := applyCodexPromptCacheHeaders(from, req, body)
+	body, wsHeaders := applyCodexPromptCacheHeaders(from, req, body, auth)
 	reporter.SetTranslatedReasoningEffort(body, to.String())
 	wsHeaders = applyCodexWebsocketHeaders(ctx, wsHeaders, auth, apiKey, e.cfg)
 
@@ -813,7 +813,7 @@ func buildCodexResponsesWebsocketURL(httpURL string) (string, error) {
 	return parsed.String(), nil
 }
 
-func applyCodexPromptCacheHeaders(from sdktranslator.Format, req cliproxyexecutor.Request, rawJSON []byte) ([]byte, http.Header) {
+func applyCodexPromptCacheHeaders(from sdktranslator.Format, req cliproxyexecutor.Request, rawJSON []byte, auth *cliproxyauth.Auth) ([]byte, http.Header) {
 	headers := http.Header{}
 	if len(rawJSON) == 0 {
 		return rawJSON, headers
@@ -841,6 +841,7 @@ func applyCodexPromptCacheHeaders(from sdktranslator.Format, req cliproxyexecuto
 	}
 
 	if cache.ID != "" {
+		cache.ID = scopedCodexUpstreamSessionID(auth, cache.ID)
 		rawJSON, _ = sjson.SetBytes(rawJSON, "prompt_cache_key", cache.ID)
 		setHeaderCasePreserved(headers, "session_id", cache.ID)
 		headers.Set("Conversation_id", cache.ID)
@@ -853,6 +854,8 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 	if headers == nil {
 		headers = http.Header{}
 	}
+	hadSessionID := strings.TrimSpace(headerValueCaseInsensitive(headers, "session_id")) != ""
+	hadConversationID := strings.TrimSpace(headerValueCaseInsensitive(headers, "Conversation_id")) != ""
 	if strings.TrimSpace(token) != "" {
 		headers.Set("Authorization", "Bearer "+token)
 	}
@@ -888,6 +891,16 @@ func applyCodexWebsocketHeaders(ctx context.Context, headers http.Header, auth *
 		ensureHeaderCasePreserved(headers, ginHeaders, "session_id", "", uuid.NewString())
 	}
 	ensureHeaderCasePreserved(headers, ginHeaders, "session_id", "", "")
+	if !hadSessionID {
+		if sessionID := strings.TrimSpace(headerValueCaseInsensitive(headers, "session_id")); sessionID != "" {
+			setHeaderCasePreserved(headers, "session_id", scopedCodexUpstreamSessionID(auth, sessionID))
+		}
+	}
+	if !hadConversationID {
+		if conversationID := strings.TrimSpace(headerValueCaseInsensitive(headers, "Conversation_id")); conversationID != "" {
+			headers.Set("Conversation_id", scopedCodexUpstreamSessionID(auth, conversationID))
+		}
+	}
 	if originator := strings.TrimSpace(ginHeaders.Get("Originator")); originator != "" {
 		headers.Set("Originator", originator)
 	} else if !isAPIKey {
@@ -1274,6 +1287,26 @@ func (e *CodexWebsocketsExecutor) ensureUpstreamConn(ctx context.Context, auth *
 	sess.connMu.Lock()
 	conn := sess.conn
 	readerConn := sess.readerConn
+	if conn != nil && !codexWebsocketAuthIDMatches(sess.authID, authID) {
+		previous := conn
+		previousAuthID := sess.authID
+		previousWSURL := sess.wsURL
+		sessionID := sess.sessionID
+		sess.conn = nil
+		if sess.readerConn == previous {
+			sess.readerConn = nil
+		}
+		conn = nil
+		readerConn = nil
+		sess.connMu.Unlock()
+		logCodexWebsocketDisconnected(sessionID, previousAuthID, previousWSURL, "auth_changed", nil)
+		if errClose := previous.Close(); errClose != nil {
+			log.Errorf("codex websockets executor: close websocket error: %v", errClose)
+		}
+		sess.connMu.Lock()
+		conn = sess.conn
+		readerConn = sess.readerConn
+	}
 	sess.connMu.Unlock()
 	if conn != nil {
 		if readerConn != conn {
@@ -1310,6 +1343,12 @@ func (e *CodexWebsocketsExecutor) ensureUpstreamConn(ctx context.Context, auth *
 	go e.readUpstreamLoop(sess, conn)
 	logCodexWebsocketConnected(sess.sessionID, authID, wsURL)
 	return conn, resp, nil
+}
+
+func codexWebsocketAuthIDMatches(existing string, next string) bool {
+	existing = strings.TrimSpace(existing)
+	next = strings.TrimSpace(next)
+	return existing == "" || next == "" || existing == next
 }
 
 func (e *CodexWebsocketsExecutor) readUpstreamLoop(sess *codexWebsocketSession, conn *websocket.Conn) {
